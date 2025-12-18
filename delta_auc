@@ -1,0 +1,75 @@
+# ============================================================
+# Minimal delta-AUC (CV ROC) script
+# - Computes CV AUC for:
+#   (1) gut-only model
+#   (2) metabolite-only model
+#   (3) multi-omic model (gut + metabolite)
+# - Then reports delta AUC vs each single-omic model
+# ============================================================
+
+suppressPackageStartupMessages({
+  library(caret)
+})
+
+set.seed(1)
+
+# ---- INPUT: pm.df must already exist ----
+# pm.df <- readRDS("pm.df.rds")  # optional if you save/load it
+
+# Required columns:
+#   pm.df$Cognitive_impairment in c("No","Yes")
+#   pm.df$Sutterella
+#   pm.df$Metabolite_38
+
+# ---- sanity checks ----
+stopifnot("Cognitive_impairment" %in% colnames(pm.df))
+
+needed_predictors <- c("Sutterella", "Metabolite_38")
+missing_preds <- setdiff(needed_predictors, colnames(pm.df))
+if (length(missing_preds) > 0) {
+  stop("Missing predictor columns in pm.df: ", paste(missing_preds, collapse = ", "))
+}
+
+# Keep complete cases for the variables we use
+keep <- complete.cases(pm.df[, c("Cognitive_impairment", needed_predictors)])
+dat <- pm.df[keep, , drop = FALSE]
+
+# Outcome must be a 2-level factor with 'No' as the first (negative) class
+y <- factor(dat$Cognitive_impairment, levels = c("No", "Yes"))
+
+# Predictors for each model
+X_gut   <- dat[, c("Sutterella"), drop = FALSE]
+X_met   <- dat[, c("Metabolite_38"), drop = FALSE]
+X_multi <- dat[, c("Sutterella", "Metabolite_38"), drop = FALSE]
+
+# ---- CV control (ROC) ----
+ctrl <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary,
+  savePredictions = "final"
+)
+
+# ---- fit models ----
+gut_cv   <- train(x = X_gut,   y = y, method = "glm", family = binomial(), trControl = ctrl, metric = "ROC")
+met_cv   <- train(x = X_met,   y = y, method = "glm", family = binomial(), trControl = ctrl, metric = "ROC")
+multi_cv <- train(x = X_multi, y = y, method = "glm", family = binomial(), trControl = ctrl, metric = "ROC")
+
+# ---- extract AUCs ----
+auc_gut   <- gut_cv$results$ROC
+auc_met   <- met_cv$results$ROC
+auc_multi <- multi_cv$results$ROC
+
+delta_auc_vs_gut <- auc_multi - auc_gut
+delta_auc_vs_met <- auc_multi - auc_met
+
+# ---- report ----
+out <- data.frame(
+  model = c("Gut only", "Metabolite only", "Multi-omic"),
+  cv_auc = c(auc_gut, auc_met, auc_multi)
+)
+
+print(out)
+cat("\nDelta AUC (Multi - Gut): ", round(delta_auc_vs_gut, 3), "\n", sep = "")
+cat("Delta AUC (Multi - Met): ", round(delta_auc_vs_met, 3), "\n", sep = "")
